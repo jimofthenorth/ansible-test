@@ -1,0 +1,151 @@
+---
+- hosts: webserver
+  remote_user: testuser
+  tasks:
+  - name: test connection
+    ping:
+
+# clear old iptables rules
+  - name: set default INPUT policy to ACCEPT
+    command: iptables -P INPUT ACCEPT
+    sudo: true
+
+  - name: set default OUTPUT policy to ACCEPT
+    command: iptables -P OUTPUT ACCEPT
+    sudo: true
+
+  - name: flush iptables
+    command: iptables -F
+    sudo: true
+
+  - name: install nodejs
+    apt: name=nodejs state=present
+    sudo: true
+
+  - name: install npm
+    apt: name=npm state=present
+    sudo: true
+
+  - name: install git
+    apt: name=git state=present
+    sudo: true
+
+  - name: install pm2
+    npm: name=pm2 global=yes state=present
+    sudo: true
+
+  - name: install express
+    npm: name=express path=/home/testuser/app
+
+# default repo in Ubuntu is a little dated so we use ppa
+  - name: update aptitude with newer nginx repo
+    apt_repository: repo='ppa:nginx/stable'
+    sudo: true
+
+  - name: install nginx
+    apt: name=nginx state=present
+    sudo: true
+
+# ubuntu installs node as nodejs, we make a symbolic link so pm2 works
+# we use the creates parameter so that it won't run the command if
+# /usr/bin/node already exists
+# Otherwise Ansible will error at this step
+  - name: set '/usr/bin/nodejs' symbolic link to '/usr/bin/node'
+    command: ln -s /usr/bin/nodejs /usr/bin/node creates=/usr/bin/node
+    sudo: true
+
+  - name: stop pm2 if running
+    command: pm2 kill
+
+  - name: start pm2 with nodejs app
+    command: pm2 start /home/testuser/app/index.js
+
+  - name: set nginx proxy configuration
+    template: src=virtual.j2 dest=/etc/nginx/conf.d/virtual.conf
+    sudo: true
+
+  - name: start nginx
+    service: name=nginx state=started
+    sudo: true
+
+  - name: retrieve Heroku node-js-sample repo | clone git
+    git: repo=https://github.com/heroku/node-js-sample.git dest=/home/testuser/app
+
+# RELATED,ESTABLISHED connections
+  - name: allow RELATED and ESTABLISHED connections on INPUT
+    command: "iptables -A INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT"
+    sudo: true
+
+  - name: allow RELATED and ESTABLISHED connections on OUTPUT
+    command: "iptables -A OUTPUT -m state --state RELATED,ESTABLISHED -j ACCEPT"
+    sudo: true
+
+
+# ssh traffic
+  - name: allow ssh traffic from 192.168.0.0/16
+    command: iptables -A INPUT -s 192.168.0.0/16 -p tcp -m tcp --dport 22 -j ACCEPT
+    sudo: true
+
+  - name: allow ssh traffic from 10.0.0.0/8
+    command: iptables -A INPUT -s 10.0.0.0/8 -p tcp -m tcp --dport 22 -j ACCEPT
+    sudo: true
+
+  - name: allow ssh traffic from 172.0.0.0/8
+    command: iptables -A INPUT -s 172.0.0.0/8 -p tcp -m tcp --dport 22 -j ACCEPT
+    sudo: true
+
+  - name: allow OUTPUT ssh traffic
+    command: iptables -A OUTPUT -p tcp -m tcp --sport 22 -j ACCEPT
+    sudo: true
+
+
+# local traffic, necessary for proxy to work
+  - name: allow local INPUT traffic
+    command: iptables -A INPUT -i lo -j ACCEPT
+    sudo: true
+
+  - name: allow local OUTPUT traffic
+    command: iptables -A OUTPUT -o lo -j ACCEPT
+    sudo: true
+
+
+# input connections
+  - name: allow all INPUT connections over tcp port 80 with some DoS mitigation
+    command: iptables -A INPUT -p tcp -m tcp --dport 80 -m limit --limit 30/min --limit-burst 100 -j ACCEPT
+    sudo: true
+
+  - name: allow all INPUT connections over tcp port 443 with some DoS mitigation
+    command: iptables -A INPUT -p tcp -m tcp --dport 443 -m limit --limit 30/min --limit-burst 100 -j ACCEPT
+    sudo: true
+
+  - name: allow all INPUT connections over icmp with some DoS mitigation
+    command: iptables -A INPUT -p icmp -m limit --limit 10/s -j ACCEPT
+    sudo: true
+
+  - name: set default INPUT policy to DROP
+    command: iptables -P INPUT DROP
+    sudo: true
+
+
+# output connections
+  - name: allow all OUTPUT connections over tcp port 80
+    command: iptables -A OUTPUT -p tcp -m tcp --sport 80 -j ACCEPT
+    sudo: true
+
+  - name: allow all OUTPUT connections over tcp port 443
+    command: iptables -A OUTPUT -p tcp -m tcp --sport 443 -j ACCEPT
+    sudo: true
+
+  - name: allow all OUTPUT connections over icmp
+    command: iptables -A OUTPUT -p icmp -j ACCEPT
+    sudo: true
+
+  - name: set default OUTPUT policy to DROP
+    command: iptables -P OUTPUT DROP
+    sudo: true
+
+
+# Not a router so no forwarding
+  - name: set default FORWARD policy to DROP
+    command: iptables -P FORWARD DROP
+    sudo: true
